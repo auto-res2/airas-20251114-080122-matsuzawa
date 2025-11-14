@@ -813,6 +813,11 @@
       "expected_result": "mean ± std (3 seeds)\n                val-EM  test-EM  GSM1k  overhead\nCosine           78.5±0.4 77.9  69.4    –\nDiFES-global     86.1±0.3 85.5  80.2   2.0 %\nLaFiDES (ours)   87.0±0.2 86.6  82.1   2.3 %",
       "expected_conclusion": "A single extra forward pass can deliver *layer-specific* curvature and noise estimates sufficient to keep every LoRA block on its own Edge-of-Stability, entirely eliminating the need for a manually tuned global scale.  LaFiDES improves GSM8K accuracy by +0.9 pp over the best global tuner, boosts OOD GSM1k by +1.9 pp, and maintains a ≤2.5 % runtime overhead, thus bringing truly plug-and-play, hyper-parameter-free LR adaptation to quantised LLM fine-tuning workflows."
     },
-    "iterations": []
+    "iterations": [
+      {
+        "iteration_id": 1,
+        "method": "Layer-wise Finite-Difference Edge Solver (LaFiDES)\n1.  Theory.  For SGD with noise variance σ²_ℓ on layer ℓ, EoS is reached when η_ℓ = 2ρ_ℓ / (λ₁,ℓ+ε) with ρ_ℓ = σ²_ℓ /(σ²_ℓ+‖ḡ_ℓ‖²).  This removes the arbitrary scale α.\n2.  One–Shot multi-layer curvature.  During the gradient-accumulated backward pass we already hold g_ℓ.  Before the optimiser step we create *one* 1-bit sign mask s_ℓ = sign(g_ℓ) for every trainable LoRA matrix.  A fused Triton kernel adds δ·s_ℓ (δ = 1e-4·‖θ_ℓ‖₁ /m) to a *single* contiguous FP16 shadow buffer, runs a second forward on the same micro-batch, and reads back L′.  The finite-difference Rayleigh quotient per layer is then\n        λ̂₁,ℓ = 2(L−L′)/(δ² m)\n   where m is LoRA parameter count.  Because all layers share the same perturbed weights tensor the extra cost is exactly one forward pass regardless of #layers.\n3.  Noise-scale.  Mini-batch gradient variance is available from the already computed grads: σ̂²_ℓ = Var_i g_{ℓ,i}.\n4.  Plug-in LR without α:\n        η_ℓ = clip( 2ρ̂_ℓ /(λ̂₁,ℓ+1e-9), η_min, η_max )\n   with safe defaults η_min=1e-7, η_max=1e-2 (hardware-limited).\n5.  Scheduler.  Every K=4 optimiser steps we run the forward-probe, update η_ℓ of the corresponding param-group, and keep it frozen in between – no Adam beta resets.\n6.  Compute / memory: +1 forward, +1-bit scratch for each adapter weight, no graph retention, Flash-Attention safe, NF4/INT4 compatible."
+      }
+    ]
   }
 }
