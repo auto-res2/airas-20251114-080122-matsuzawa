@@ -816,7 +816,46 @@
     "iterations": [
       {
         "iteration_id": 1,
-        "method": "Layer-wise Finite-Difference Edge Solver (LaFiDES)\n1.  Theory.  For SGD with noise variance σ²_ℓ on layer ℓ, EoS is reached when η_ℓ = 2ρ_ℓ / (λ₁,ℓ+ε) with ρ_ℓ = σ²_ℓ /(σ²_ℓ+‖ḡ_ℓ‖²).  This removes the arbitrary scale α.\n2.  One–Shot multi-layer curvature.  During the gradient-accumulated backward pass we already hold g_ℓ.  Before the optimiser step we create *one* 1-bit sign mask s_ℓ = sign(g_ℓ) for every trainable LoRA matrix.  A fused Triton kernel adds δ·s_ℓ (δ = 1e-4·‖θ_ℓ‖₁ /m) to a *single* contiguous FP16 shadow buffer, runs a second forward on the same micro-batch, and reads back L′.  The finite-difference Rayleigh quotient per layer is then\n        λ̂₁,ℓ = 2(L−L′)/(δ² m)\n   where m is LoRA parameter count.  Because all layers share the same perturbed weights tensor the extra cost is exactly one forward pass regardless of #layers.\n3.  Noise-scale.  Mini-batch gradient variance is available from the already computed grads: σ̂²_ℓ = Var_i g_{ℓ,i}.\n4.  Plug-in LR without α:\n        η_ℓ = clip( 2ρ̂_ℓ /(λ̂₁,ℓ+1e-9), η_min, η_max )\n   with safe defaults η_min=1e-7, η_max=1e-2 (hardware-limited).\n5.  Scheduler.  Every K=4 optimiser steps we run the forward-probe, update η_ℓ of the corresponding param-group, and keep it frozen in between – no Adam beta resets.\n6.  Compute / memory: +1 forward, +1-bit scratch for each adapter weight, no graph retention, Flash-Attention safe, NF4/INT4 compatible."
+        "method": "Layer-wise Finite-Difference Edge Solver (LaFiDES)\n1.  Theory.  For SGD with noise variance σ²_ℓ on layer ℓ, EoS is reached when η_ℓ = 2ρ_ℓ / (λ₁,ℓ+ε) with ρ_ℓ = σ²_ℓ /(σ²_ℓ+‖ḡ_ℓ‖²).  This removes the arbitrary scale α.\n2.  One–Shot multi-layer curvature.  During the gradient-accumulated backward pass we already hold g_ℓ.  Before the optimiser step we create *one* 1-bit sign mask s_ℓ = sign(g_ℓ) for every trainable LoRA matrix.  A fused Triton kernel adds δ·s_ℓ (δ = 1e-4·‖θ_ℓ‖₁ /m) to a *single* contiguous FP16 shadow buffer, runs a second forward on the same micro-batch, and reads back L′.  The finite-difference Rayleigh quotient per layer is then\n        λ̂₁,ℓ = 2(L−L′)/(δ² m)\n   where m is LoRA parameter count.  Because all layers share the same perturbed weights tensor the extra cost is exactly one forward pass regardless of #layers.\n3.  Noise-scale.  Mini-batch gradient variance is available from the already computed grads: σ̂²_ℓ = Var_i g_{ℓ,i}.\n4.  Plug-in LR without α:\n        η_ℓ = clip( 2ρ̂_ℓ /(λ̂₁,ℓ+1e-9), η_min, η_max )\n   with safe defaults η_min=1e-7, η_max=1e-2 (hardware-limited).\n5.  Scheduler.  Every K=4 optimiser steps we run the forward-probe, update η_ℓ of the corresponding param-group, and keep it frozen in between – no Adam beta resets.\n6.  Compute / memory: +1 forward, +1-bit scratch for each adapter weight, no graph retention, Flash-Attention safe, NF4/INT4 compatible.",
+        "experimental_design": {
+          "experiment_summary": "We will fine-tune the 0.6-billion-parameter Qwen3-0.6B language model on the GSM8K mathematics corpus with LoRA (r = 16) using 4-bit QLoRA quantisation.  Three learning-rate control strategies are compared: (1) the proposed Layer-wise Finite-Difference Edge Solver (LaFiDES) that computes a separate, provably EoS-optimal learning rate for every LoRA block without any user-tuned scale, (2) the strongest published curvature-aware baseline, DiFES with a single global scale α, and (3) a conventional cosine decay (only used for ablation and not included in the metric table).  All runs share identical optimiser (AdamW β1 = 0.9, β2 = 0.95), batch (16×4-grad-acc), epoch budget (3) and seed set (3).  Every four optimiser steps LaFiDES performs one extra forward pass with a 1-bit signed perturbation buffer to obtain finite-difference curvature estimates, calculates gradient noise, and updates per-layer LRs, adding ≈2.3 % time overhead.  Exact-match accuracy on the GSM8K validation split is the primary measure; GSM8K test, GSM1k OOD transfer, wall-time overhead, and energy per training step are secondary metrics.  Hyper-parameter search is restricted to the global scale α for DiFES and the initial cosine learning-rate baseline; LaFiDES itself is hyper-parameter-free except for the safety clip which remains fixed.",
+          "evaluation_metrics": [
+            "Exact-match accuracy (GSM8K validation)",
+            "Exact-match accuracy (GSM8K test)",
+            "Exact-match accuracy (GSM1k)",
+            "Wall-time overhead (%)",
+            "Energy per training step (J)",
+            "Exact-match accuracy on GSM8K validation set."
+          ],
+          "proposed_method": "Layer-wise Finite-Difference Edge Solver (LaFiDES)\nObjective: keep every LoRA adapter exactly on its own Edge-of-Stability point without any user-supplied scale.\nTheory: For SGD on layer ℓ, the EoS learning rate is η_ℓ = 2ρ_ℓ /(λ₁,ℓ + ε) where ρ_ℓ = σ²_ℓ /(σ²_ℓ + ‖ḡ_ℓ‖²), λ₁,ℓ is the top Hessian eigenvalue and σ²_ℓ the mini-batch gradient variance.\nAlgorithmic procedure per K = 4 optimiser steps:\n1. Compute normal backward passes with gradient accumulation; retain the grads g_ℓ.\n2. Build a 1-bit sign mask s_ℓ = sign(g_ℓ); write all masks into one contiguous FP16 buffer.\n3. Add δ·s_ℓ in-place to the quantised LoRA weights (δ = 1e-4·‖θ_ℓ‖₁/m).\n4. Run a single extra forward on the same micro-batch, obtain perturbed loss L′ and restore weights.\n5. Estimate curvature: λ̂₁,ℓ = 2(L−L′)/(δ² m).\n6. Estimate gradient noise: σ̂²_ℓ = Var_i g_{ℓ,i} (variance across examples already in the micro-batch).\n7. Compute ρ̂_ℓ and plug into η_ℓ = clip(2ρ̂_ℓ /(λ̂₁,ℓ +1e-9), 1e-7, 1e-2); update the param-group LR.\n8. Proceed with normal AdamW updates for the next K − 1 steps.\nMemory/compute cost: exactly one extra forward pass every four steps and one extra bit per trainable parameter; INT4/NF4 compatible; no second-order autograd; no extra backwards.",
+          "comparative_methods": [
+            "DiFES-global (curvature-aware LR with single global scale α)"
+          ],
+          "models_to_use": [
+            "Qwen3-0.6B"
+          ],
+          "datasets_to_use": [
+            "gsm8k"
+          ],
+          "hyperparameters_to_search": {
+            "alpha_scale_global (DiFES)": "0.1-5.0",
+            "initial_base_learning_rate (Cosine baseline)": "1e-5-2e-3"
+          }
+        },
+        "experiment_runs": [
+          {
+            "run_id": "proposed-iter1-Qwen3-0.6B-gsm8k",
+            "method_name": "proposed",
+            "model_name": "Qwen3-0.6B",
+            "dataset_name": "gsm8k"
+          },
+          {
+            "run_id": "comparative-1-iter1-Qwen3-0.6B-gsm8k",
+            "method_name": "comparative-1",
+            "model_name": "Qwen3-0.6B",
+            "dataset_name": "gsm8k"
+          }
+        ]
       }
     ]
   }
